@@ -1,0 +1,107 @@
+---
+title: "Linear Regression Analysis"
+author: "Sanjeev Subramanian"
+date: "2025-05-10"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+```{r}
+library(dplyr)
+library(readr)
+library(stringr)
+
+edu    <- read_csv("Data/Counties_Education_All_Counties.csv")
+income <- read_csv("Data/County_Per_Capita_Income_Ratios.csv")
+
+income_filtered <- income %>%
+  filter(str_detect(Description, regex("income ratio", ignore_case = TRUE)))
+
+edu  <- edu  %>% mutate(FIPS = str_pad(str_trim(FIPS)   , 5, pad = "0"))
+income_filtered <- income_filtered %>%
+  mutate(FIPS = str_pad(str_trim(GeoFIPS), 5, pad = "0"))
+
+edu_clean <- edu %>%
+  select(FIPS,
+         edu_2000       = `2000`,
+         edu_2008_2012  = `2008-2012`,
+         edu_2019_2023  = `2019-2023`)
+
+income_clean <- income_filtered %>%
+  select(FIPS,
+         inc_2001 = `2001`,
+         inc_2010 = `2010`,
+         inc_2019 = `2019`)
+
+merged <- inner_join(edu_clean, income_clean, by = "FIPS")
+cat("Rows after merge:", nrow(merged), "\n")
+
+clean_df <- function(df, inc_col, edu_col) {
+  df %>%
+    filter(!is.na(.data[[inc_col]]) &  .data[[inc_col]]  > 0,
+           !is.na(.data[[edu_col]]) & .data[[edu_col]] > 0)
+}
+
+df_2001 <- clean_df(merged, "inc_2001", "edu_2000")
+cat("Rows in model_2001:", nrow(df_2001), "\n")
+model_2001 <- lm(log(inc_2001) ~ log(edu_2000), data = df_2001)
+
+df_2010 <- clean_df(merged, "inc_2010", "edu_2008_2012")
+cat("Rows in model_2010:", nrow(df_2010), "\n")
+model_2010 <- lm(log(inc_2010) ~ log(edu_2008_2012), data = df_2010)
+
+df_2019 <- clean_df(merged, "inc_2019", "edu_2019_2023")
+cat("Rows in model_2019:", nrow(df_2019), "\n")
+model_2019 <- lm(log(inc_2019) ~ log(edu_2019_2023), data = df_2019)
+
+par(mfrow = c(2, 2))
+plot(model_2001, main = "Diagnostics for model_2001")
+plot(model_2010, main = "Diagnostics for model_2010")
+plot(model_2019, main = "Diagnostics for model_2019")
+
+library(lmtest)
+bptest(model_2001)
+bptest(model_2010)
+bptest(model_2019)
+
+shapiro.test(residuals(model_2001))
+shapiro.test(residuals(model_2010))
+shapiro.test(residuals(model_2019))
+
+# The models meet the linearity assumptions, but fail to satisfy normality of residuals. While a few observations have an influence, there are no extreme outliers.
+
+summary(model_2001)
+summary(model_2010)
+summary(model_2019)
+
+library(ggplot2)
+library(patchwork)
+
+p1 <- ggplot(df_2001,
+             aes(x = log(edu_2000), y = log(inc_2001))) +
+  geom_point(alpha = .6) +
+  geom_smooth(method = "lm", se = FALSE, linewidth = .8) +
+  labs(title = "ln(Income 2001) vs ln(Education 2000)",
+       x = "ln(Education 2000)",
+       y = "ln(Income ratio 2001)")
+
+p2 <- ggplot(df_2010,
+             aes(x = log(edu_2008_2012), y = log(inc_2010))) +
+  geom_point(alpha = .6) +
+  geom_smooth(method = "lm", se = FALSE, linewidth = .8) +
+  labs(title = "ln(Income 2010) vs ln(Education 2008‑2012)",
+       x = "ln(Education 2008‑2012)",
+       y = "ln(Income ratio 2010)")
+
+p3 <- ggplot(df_2019,
+             aes(x = log(edu_2019_2023), y = log(inc_2019))) +
+  geom_point(alpha = .6) +
+  geom_smooth(method = "lm", se = FALSE, linewidth = .8) +
+  labs(title = "ln(Income 2019) vs ln(Education 2019‑2023)",
+       x = "ln(Education 2019‑2023)",
+       y = "ln(Income ratio 2019)")
+
+(p1 / p2 / p3) + patchwork::plot_layout(guides = "collect")
+```
