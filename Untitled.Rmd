@@ -1,0 +1,126 @@
+---
+title: "next steps 2"
+author: "Sanjeev Subramanian"
+date: "2025-06-12"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(dplyr)
+library(readr)
+library(stringr)
+library(ggplot2)
+library(tigris)
+library(sf)
+library(tidyr)
+
+make_fips_5 <- function(x) str_pad(str_trim(as.character(x)), 5, "left", "0")
+
+# ── Education ────────────────────────────────────────────────────────────────
+edu_reg <- read_csv("Data/Counties_Education_All_Counties.csv", show_col_types = FALSE) |>
+  mutate(FIPS = make_fips_5(FIPS))
+
+edu_change <- edu_reg |>
+  transmute(
+    FIPS,
+    edu_2000      = as.numeric(`2000`),
+    edu_2019_2023 = as.numeric(`2019-2023`)
+  ) |>
+  filter(!is.na(edu_2000) & !is.na(edu_2019_2023)) |>
+  mutate(education_change = edu_2019_2023 - edu_2000)
+
+# ── Income & Population (same raw file) ──────────────────────────────────────
+raw_inc <- read_csv("Data/County_Only_Full_Income_Data.csv",
+                    col_types = cols(.default = "c"),
+                    show_col_types = FALSE)
+
+# Per-capita income 30.0
+income_growth <- raw_inc |>
+  filter(LineCode == "30.0") |>
+  transmute(
+    FIPS        = make_fips_5(GeoFIPS),
+    income_2001 = as.numeric(`2001`),
+    income_2023 = as.numeric(`2023`)
+  ) |>
+  filter(income_2001 > 0 & income_2023 > 0)
+
+income_growth <- income_growth |>
+  mutate(growth_income_county = (income_2023 / income_2001)^(1 / 22))
+
+# ── ❶  Detect the population LineCode  ───────────────────────────────────────
+pop_codes <- raw_inc |>
+  filter(str_detect(Description, "(?i)population")) |>
+  distinct(LineCode) |>
+  pull(LineCode)
+
+if (length(pop_codes) == 0) {
+  stop("Could not find any rows whose Description contains the word 'Population'.\n",
+       "Open the CSV and note the correct LineCode, then update the filter.")
+}
+
+message("Detected population LineCode(s): ", paste(pop_codes, collapse = ", "))
+
+pop_df <- raw_inc |>
+  filter(LineCode %in% pop_codes) |>
+  transmute(
+    FIPS     = make_fips_5(GeoFIPS),
+    pop_2001 = as.numeric(`2001`),
+    pop_2023 = as.numeric(`2023`)
+  ) |>
+  filter(pop_2001 > 0 & pop_2023 > 0)
+
+if (nrow(pop_df) == 0) {
+  stop("Population rows were detected, but numeric conversion produced zero usable observations.\n",
+       "Inspect the year columns for non-numeric symbols or footnotes.")
+}
+
+# ── Merge & regress ─────────────────────────────────────────────────────────
+reg_df <- income_growth |>
+  inner_join(edu_change, by = "FIPS") |>
+  inner_join(pop_df,    by = "FIPS") |>
+  transmute(
+    FIPS,
+    log_income_growth = log(growth_income_county),
+    log_edu_growth    = log((edu_2019_2023 + 0.01) / (edu_2000 + 0.01)),
+    log_pop_growth    = log((pop_2023 / pop_2001)^(1 / 22))
+  ) |>
+  drop_na()
+
+m1 <- lm(log_income_growth ~ log_edu_growth,                 data = reg_df)
+m2 <- lm(log_income_growth ~ log_pop_growth,                 data = reg_df)
+m3 <- lm(log_income_growth ~ log_edu_growth + log_pop_growth, data = reg_df)
+
+summary(m1); summary(m2); summary(m3)
+
+# ── Mapping ──────────────────────────────────────────────────────────────────
+options(tigris_use_cache = TRUE)
+counties_sf <- counties(cb = TRUE, year = 2023, class = "sf") |>
+  mutate(FIPS = GEOID)
+
+map_df <- counties_sf |>
+  left_join(reg_df, by = "FIPS")
+
+plot_map <- function(data, fill_var, title, contiguous = TRUE) {
+  g <- ggplot(data) +
+    geom_sf(aes_string(fill = fill_var), color = NA) +
+    scale_fill_viridis_c(option = "plasma", na.value = "grey80") +
+    labs(title = title, fill = NULL) +
+    theme_void()
+  if (contiguous) g + coord_sf(xlim = c(-125, -66), ylim = c(25, 50)) else g
+}
+
+m_income_conus <- plot_map(map_df, "log_income_growth", "Log(Income Growth)")
+m_edu_conus    <- plot_map(map_df, "log_edu_growth",    "Log(Education Growth)")
+m_pop_conus    <- plot_map(map_df, "log_pop_growth",    "Log(Population Growth)")
+
+m_income_all <- plot_map(map_df, "log_income_growth", "Log(Income Growth)", contiguous = FALSE)
+m_edu_all    <- plot_map(map_df, "log_edu_growth",    "Log(Education Growth)", contiguous = FALSE)
+m_pop_all    <- plot_map(map_df, "log_pop_growth",    "Log(Population Growth)", contiguous = FALSE)
+
+print(m_income_conus); print(m_edu_conus); print(m_pop_conus)
+print(m_income_all);   print(m_edu_all);   print(m_pop_all)
+```
