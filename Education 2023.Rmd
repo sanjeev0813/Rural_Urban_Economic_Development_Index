@@ -1,0 +1,96 @@
+---
+title: "Education 2023"
+author: "Sanjeev Subramanian"
+date: "2025-06-19"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+```{r}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(tigris)
+library(sf)
+options(tigris_use_cache = TRUE)
+
+edu_raw <- read.csv("Data/Education 2023.csv", encoding = "latin1")
+
+edu <- edu_raw |>
+  filter(grepl("2019-23", Attribute)) |>
+  filter(Attribute %in% c(
+    "Percent of adults who are high school graduates (or equivalent), 2019-23",
+    "Percent of adults completing some college or associate degree, 2019-23",
+    "Percent of adults with a bachelor's degree or higher, 2019-23"
+  )) |>
+  pivot_wider(names_from = Attribute, values_from = Value) |>
+  mutate(fips = sprintf("%05s", FIPS.Code)) |>
+  transmute(
+    fips,
+    high_school = `Percent of adults who are high school graduates (or equivalent), 2019-23`,
+    some_college = `Percent of adults completing some college or associate degree, 2019-23`,
+    bachelors   = `Percent of adults with a bachelor's degree or higher, 2019-23`
+  )
+
+pop_raw <- read.csv("Data/County_Only_Full_Income_Data.csv", check.names = FALSE)
+
+pop <- pop_raw |>
+  filter(trimws(Description) == "Population (persons) 2/") |>
+  mutate(
+    fips = sprintf("%05s", gsub('"', "", GeoFIPS)),
+    log_pop_growth = log(as.numeric(`2023`) / as.numeric(`2001`))
+  ) |>
+  select(fips, log_pop_growth)
+
+base <- inner_join(edu, pop, by = "fips") |>
+  mutate(
+    y       = bachelors,
+    ed_diff = some_college
+  )
+
+r1_df <- base |> drop_na(y, ed_diff, log_pop_growth)
+reg1  <- lm(y ~ ed_diff + log_pop_growth, r1_df)
+
+r1_df <- r1_df |>
+  mutate(
+    int_resid_1 = coef(reg1)[1] + resid(reg1),
+    ed_eff_1    = coef(reg1)["ed_diff"]        * ed_diff,
+    pop_eff_1   = coef(reg1)["log_pop_growth"] * log_pop_growth
+  )
+
+r2_df <- r1_df |> drop_na(high_school, some_college, log_pop_growth)
+reg2  <- lm(y ~ high_school + some_college + log_pop_growth, r2_df)
+
+r2_df <- r2_df |>
+  mutate(
+    int_resid_2 = coef(reg2)[1] + resid(reg2),
+    hs_eff_2    = coef(reg2)["high_school"]    * high_school,
+    sc_eff_2    = coef(reg2)["some_college"]   * some_college,
+    pop_eff_2   = coef(reg2)["log_pop_growth"] * log_pop_growth
+  )
+
+counties_sf <- counties(cb = TRUE, class = "sf") |>
+  mutate(fips = GEOID)
+
+map_data <- counties_sf |>
+  left_join(r2_df, by = "fips")
+
+plot_map <- function(var, title) {
+  ggplot(map_data) +
+    geom_sf(aes(fill = .data[[var]]), color = NA) +
+    scale_fill_viridis_c(option = "plasma", na.value = "grey90") +
+    ggtitle(title) +
+    theme_minimal()
+}
+
+plot_map("int_resid_1", "Regression 1: Intercept + Residual")
+plot_map("ed_eff_1",    "Regression 1: Education Effect")
+plot_map("pop_eff_1",   "Regression 1: Population Effect")
+
+plot_map("int_resid_2", "Regression 2: Intercept + Residual")
+plot_map("hs_eff_2",    "Regression 2: High-School Effect")
+plot_map("sc_eff_2",    "Regression 2: Some-College Effect")
+plot_map("pop_eff_2",   "Regression 2: Population Effect")
+```
