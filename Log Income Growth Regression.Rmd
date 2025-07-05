@@ -1,0 +1,69 @@
+  ---
+  title: "Log Income Growth Regression"
+  author: "Sanjeev Subramanian"
+  date: "2025-07-03"
+  output: pdf_document
+  ---
+  
+  ```{r setup, include=FALSE}
+  knitr::opts_chunk$set(echo = TRUE)
+  ```
+  
+  ```{r}
+  library(dplyr)
+  library(tidyr)
+  library(readr)
+  income_raw <- read_csv("Data/County_Only_Full_Income_Data.csv")
+income <- income_raw %>%
+  filter(trimws(Description) == "Personal income (thousands of dollars)") %>%
+  mutate(
+    fips = sprintf("%05s", gsub('"', "", GeoFIPS)),
+    income_2001 = as.numeric(`2001`),
+    income_2023 = as.numeric(`2023`),
+    log_income_growth = log(income_2023 / income_2001)
+  ) %>%
+  select(fips, log_income_growth)
+
+pop_raw <- read_csv("Data/County_Only_Full_Income_Data.csv")
+pop <- pop_raw %>%
+  filter(trimws(Description) == "Population (persons) 2/") %>%
+  mutate(
+    fips = sprintf("%05s", gsub('"', "", GeoFIPS)),
+    pop_2001 = as.numeric(`2001`),
+    pop_2023 = as.numeric(`2023`),
+    log_pop_growth = log(pop_2023 / pop_2001)
+  ) %>%
+  select(fips, log_pop_growth)
+
+edu_raw <- read_csv("Data/Education 2023.csv", locale = locale(encoding = "latin1"))
+edu_analysis <- edu_raw %>%
+  filter(grepl("2000|2019-23", Attribute)) %>%
+  mutate(
+    fips = sprintf("%05s", `FIPS Code`),
+    Value = as.numeric(Value)
+  ) %>%
+  pivot_wider(names_from = Attribute, values_from = Value) %>%
+  select(-matches("not high school")) %>%
+  rename(
+    hs_2000 = `Percent of adults who are high school graduates (or equivalent), 2000`,
+    hs_2023 = `Percent of adults who are high school graduates (or equivalent), 2019-23`,
+    sc_2000 = `Percent of adults completing some college or associate degree, 2000`,
+    sc_2023 = `Percent of adults completing some college or associate degree, 2019-23`,
+    ba_2000 = `Percent of adults with a bachelor's degree or higher, 2000`,
+    ba_2023 = `Percent of adults with a bachelor's degree or higher, 2019-23`
+  ) %>%
+  mutate(
+    diff_hs = hs_2023 - hs_2000,
+    diff_sc = sc_2023 - sc_2000,
+    diff_ba = ba_2023 - ba_2000
+  ) %>%
+  select(fips, diff_hs, diff_sc, diff_ba)
+
+merged <- income %>%
+  inner_join(pop, by = "fips") %>%
+  inner_join(edu_analysis, by = "fips") %>%
+  drop_na(log_income_growth, diff_hs, diff_sc, diff_ba, log_pop_growth)
+
+model <- lm(log_income_growth ~ diff_hs + diff_sc + diff_ba + log_pop_growth, data = merged)
+summary(model)
+  ```
